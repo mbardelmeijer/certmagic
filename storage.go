@@ -57,6 +57,18 @@ import (
 // key, and concurrent calls to Store() should not corrupt a
 // file.
 //
+// Caching or tiered Storage implementations (for example a
+// local disk cache in front of shared remote storage) SHOULD
+// honor StrongStorageConsistency when set on the context
+// passed to Load, Exists, Stat, and List: bypass local caches
+// and read through to durable shared storage so cluster
+// coordination (renewal pre-checks, obtain/renew under lock,
+// reload-from-storage) observes the same data on every instance.
+// Store should always write through to durable storage.
+// Contexts without StrongStorageConsistency may be served from
+// a local cache. Plain backends such as FileStorage may ignore
+// the flag.
+//
 // For simplicity, this is not a streaming API and is not
 // suitable for very large files.
 type Storage interface {
@@ -352,6 +364,27 @@ var locksMu sync.Mutex
 // for most cases. Only use this if you need to
 // directly access TLS assets in your application.
 var StorageKeys KeyBuilder
+
+type strongStorageConsistencyCtxKey struct{}
+
+// WithStrongStorageConsistency returns a child context that asks
+// caching Storage backends to bypass local caches and read through
+// to durable shared storage. CertMagic sets this on contexts used
+// for cluster-sensitive reads (renewal pre-checks, obtain/renew
+// decisions under lock, and reload-from-storage). Handshake-path
+// loads that may be served from a local cache do not set it.
+//
+// Non-caching Storage implementations may ignore this value.
+func WithStrongStorageConsistency(ctx context.Context) context.Context {
+	return context.WithValue(ctx, strongStorageConsistencyCtxKey{}, true)
+}
+
+// StrongStorageConsistency reports whether ctx was marked with
+// WithStrongStorageConsistency.
+func StrongStorageConsistency(ctx context.Context) bool {
+	v, _ := ctx.Value(strongStorageConsistencyCtxKey{}).(bool)
+	return v
+}
 
 const (
 	prefixCerts = "certificates"

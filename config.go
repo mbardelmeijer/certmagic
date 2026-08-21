@@ -553,6 +553,10 @@ func (cfg *Config) obtainCert(ctx context.Context, name string, interactive bool
 
 	name = cfg.transformSubject(ctx, log, name)
 
+	// Existence checks and post-lock re-checks must see shared durable
+	// storage so a peer's obtain is visible (caching Storage backends).
+	ctx = WithStrongStorageConsistency(ctx)
+
 	// if storage has all resources for this certificate, obtain is a no-op
 	if cfg.storageHasCertResourcesAnyIssuer(ctx, name) {
 		return nil
@@ -824,6 +828,10 @@ func (cfg *Config) renewCert(ctx context.Context, name string, force, interactiv
 	log := cfg.Logger.Named("renew")
 
 	name = cfg.transformSubject(ctx, log, name)
+
+	// Loads under the issue lock (already-renewed check) must see shared
+	// durable storage, not a stale local cache.
+	ctx = WithStrongStorageConsistency(ctx)
 
 	// ensure storage is writeable and readable
 	// TODO: this is not necessary every time; should only perform check once every so often for each storage, which may require some global state...

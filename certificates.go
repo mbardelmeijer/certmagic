@@ -531,7 +531,9 @@ func fillCertFromLeaf(cert *Certificate, tlsCert tls.Certificate) error {
 // meantime, and it would be a good idea to simply load the cert
 // into our cache rather than repeating the renewal process again.
 func (cfg *Config) managedCertInStorageNeedsRenewal(ctx context.Context, cert Certificate) (bool, error) {
-	certRes, err := cfg.loadCertResourceAnyIssuer(ctx, cert.Names[0])
+	// Must observe shared durable storage, not a local cache, so another
+	// instance's renewal is visible and we reload instead of re-issuing.
+	certRes, err := cfg.loadCertResourceAnyIssuer(WithStrongStorageConsistency(ctx), cert.Names[0])
 	if err != nil {
 		return false, err
 	}
@@ -546,7 +548,9 @@ func (cfg *Config) managedCertInStorageNeedsRenewal(ctx context.Context, cert Ce
 // already in storage. It returns the newly-loaded certificate if successful.
 func (cfg *Config) reloadManagedCertificate(ctx context.Context, oldCert Certificate) (Certificate, error) {
 	cfg.Logger.Info("reloading managed certificate", zap.Strings("identifiers", oldCert.Names))
-	newCert, err := cfg.loadManagedCertificate(ctx, oldCert.Names[0])
+	// Intentionally refreshing from durable shared storage (e.g. after a
+	// peer renewed); bypass local storage caches.
+	newCert, err := cfg.loadManagedCertificate(WithStrongStorageConsistency(ctx), oldCert.Names[0])
 	if err != nil {
 		return Certificate{}, fmt.Errorf("loading managed certificate for %v from storage: %v", oldCert.Names, err)
 	}
