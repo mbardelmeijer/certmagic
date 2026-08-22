@@ -131,6 +131,29 @@ type Config struct {
 	// TLS assets. Default is the local file system.
 	Storage Storage
 
+	// LocalCache is an optional, node-local Storage (for example a
+	// FileStorage on a local disk) used as a read-through cache in
+	// front of Storage for a certificate's assets: its certificate,
+	// private key, and metadata files, and its OCSP staple. This is
+	// useful when Storage is remote or high-latency, since assets are
+	// loaded from storage during handshakes whenever the in-memory
+	// cache does not have the certificate.
+	//
+	// Only reads that serve certificates are answered locally.
+	// Operations that coordinate with the rest of the cluster --
+	// renewals, issuance, and reloading a certificate that another
+	// instance renewed -- read Storage directly, and locking is never
+	// local; they all refresh the local cache with what they read.
+	// Writes and deletions go to Storage first, then to the local
+	// cache. Since it is only a cache, it may be cleared at any time.
+	//
+	// Beware that this stores private keys on every instance that
+	// serves them, so the local cache should be at least as secure
+	// as Storage.
+	//
+	// EXPERIMENTAL: Subject to change or removal.
+	LocalCache Storage
+
 	// CertMagic will verify the storage configuration
 	// is acceptable before obtaining a certificate
 	// to avoid information loss after an expensive
@@ -272,6 +295,9 @@ func newWithCache(certCache *Cache, cfg Config) *Config {
 	if cfg.Storage == nil {
 		cfg.Storage = Default.Storage
 	}
+	if cfg.LocalCache == nil {
+		cfg.LocalCache = Default.LocalCache
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = Default.Logger
 	}
@@ -352,7 +378,7 @@ func (cfg *Config) ClientCredentials(ctx context.Context, identifiers []string) 
 	}
 	var chains []tls.Certificate
 	for _, id := range identifiers {
-		certRes, err := cfg.loadCertResourceAnyIssuer(ctx, id)
+		certRes, err := cfg.loadCertResourceAnyIssuer(ctx, id, cfg.groundTruthStorage())
 		if err != nil {
 			return chains, err
 		}
@@ -863,8 +889,9 @@ func (cfg *Config) renewCert(ctx context.Context, name string, force, interactiv
 			}
 		}
 
-		// prepare for renewal (load PEM cert, key, and meta)
-		certRes, err := cfg.loadCertResourceAnyIssuer(ctx, name)
+		// prepare for renewal (load PEM cert, key, and meta); we hold the lock,
+		// so read storage to see if another instance already renewed this
+		certRes, err := cfg.loadCertResourceAnyIssuer(ctx, name, cfg.groundTruthStorage())
 		if err != nil {
 			return err
 		}
@@ -1108,7 +1135,7 @@ func (cfg *Config) RevokeCert(ctx context.Context, domain string, reason int, in
 			return fmt.Errorf("issuer %d (%s) is not a Revoker", i, issuerKey)
 		}
 
-		certRes, err := cfg.loadCertResource(ctx, issuer, domain)
+		certRes, err := cfg.loadCertResource(ctx, issuer, domain, cfg.groundTruthStorage())
 		if err != nil {
 			return err
 		}
@@ -1303,19 +1330,20 @@ func (cfg *Config) storageHasCertResources(ctx context.Context, issuer Issuer, d
 // certificate, private key, and metadata file for domain from the
 // issuer with the given issuer key.
 func (cfg *Config) deleteSiteAssets(ctx context.Context, issuerKey, domain string) error {
-	err := cfg.Storage.Delete(ctx, StorageKeys.SiteCert(issuerKey, domain))
+	storage := cfg.groundTruthStorage()
+	err := storage.Delete(ctx, StorageKeys.SiteCert(issuerKey, domain))
 	if err != nil {
 		return fmt.Errorf("deleting certificate file: %v", err)
 	}
-	err = cfg.Storage.Delete(ctx, StorageKeys.SitePrivateKey(issuerKey, domain))
+	err = storage.Delete(ctx, StorageKeys.SitePrivateKey(issuerKey, domain))
 	if err != nil {
 		return fmt.Errorf("deleting private key: %v", err)
 	}
-	err = cfg.Storage.Delete(ctx, StorageKeys.SiteMeta(issuerKey, domain))
+	err = storage.Delete(ctx, StorageKeys.SiteMeta(issuerKey, domain))
 	if err != nil {
 		return fmt.Errorf("deleting metadata file: %v", err)
 	}
-	err = cfg.Storage.Delete(ctx, StorageKeys.CertsSitePrefix(issuerKey, domain))
+	err = storage.Delete(ctx, StorageKeys.CertsSitePrefix(issuerKey, domain))
 	if err != nil {
 		return fmt.Errorf("deleting site asset folder: %v", err)
 	}

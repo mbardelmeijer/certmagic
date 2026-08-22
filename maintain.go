@@ -347,7 +347,9 @@ func (certCache *Cache) updateOCSPStaples(ctx context.Context) {
 			continue
 		}
 
-		err := stapleOCSP(ctx, qe.cfg.OCSP, qe.cfg.Storage, &cert, nil)
+		// this is the background refresher, so read storage rather than the
+		// local cache to pick up staples refreshed by other instances
+		err := stapleOCSP(ctx, qe.cfg.OCSP, qe.cfg.groundTruthStorage(), &cert, nil)
 		if err != nil {
 			if cert.ocsp != nil {
 				// if there was no staple before, that's fine; otherwise we should log the error
